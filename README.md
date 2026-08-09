@@ -1,598 +1,455 @@
-# TL;DR — Cognitive Reading Assistant
+# AI-GARA — Eye Tracking for Cognitive Difficulty Detection
 
-A Chrome extension that uses webcam-based eye tracking to detect when you are struggling with text and intervenes with AI-generated summaries, read-aloud, and adaptive visual aids — automatically, without manual interaction.
+A research-grade Chrome MV3 extension that uses gaze-tracking to detect reading difficulty in real time. Built for academic research, this system analyzes eye movement patterns to classify cognitive states during reading and delivers targeted interventions.
+
+**Research Focus:** Can gaze tracking reliably predict cognitive difficulty? This extension implements the full gaze-first pipeline to investigate that question.
 
 ---
 
-## Table of Contents
+## Quick Start
 
-1. [Overview](#overview)
-2. [How It Works](#how-it-works)
-3. [Features](#features)
-4. [Cognitive States](#cognitive-states)
-5. [Reader Profiles](#reader-profiles)
-6. [Multilingual Support](#multilingual-support)
-7. [Architecture](#architecture)
-8. [File Structure](#file-structure)
-9. [Installation](#installation)
-10. [Running the Backend Server](#running-the-backend-server)
-11. [Usage Guide](#usage-guide)
-12. [Keyboard Shortcuts](#keyboard-shortcuts)
-13. [Configuration](#configuration)
-14. [Accessibility](#accessibility)
-15. [Privacy](#privacy)
-16. [Security](#security)
-17. [Development Notes](#development-notes)
+```bash
+# Clone and setup
+git clone https://github.com/yourusername/AI-GARA.git
+cd AI-GARA
+
+# Install dependencies
+npm install
+cd server && npm install && cd ..
+
+# Set up your Groq API key (free tier at console.groq.com)
+echo "GROQ_API_KEY=your_key_here" > server/.env
+
+# Start the backend
+node server/index.js
+
+# Load extension in Chrome
+# 1. chrome://extensions/
+# 2. Enable Developer mode
+# 3. Load unpacked → select this folder
+```
+
+Enable the camera, run calibration, and start reading. The system detects cognitive states via gaze.
 
 ---
 
 ## Overview
 
-TL;DR is a Chrome extension that watches how you read using your webcam and responds intelligently when it detects you are confused, overloaded, zoning out, or reading too quickly through difficult text. It generates AI summaries, speaks paragraphs aloud, and adapts its visual presentation — all without you lifting a finger.
+AI-GARA is a gaze-first reading analysis system designed to investigate whether eye movement patterns can reliably predict reading difficulty. The three-layer architecture:
 
-The extension supports:
-- Ordinary web pages (articles, documentation, Wikipedia, etc.)
-- Local PDF files (`.pdf` opened from your computer)
-- Local PPTX files (`.pptx` opened from your computer)
+1. **Gaze Tracking** — WebGazer.js + local TensorFlow FaceMesh extract real-time eye position
+2. **Cognitive State Detection** — Decision tree classifier maps 9 gaze features → 5 cognitive states
+3. **Non-Intrusive Intervention** — Popup suggestions without disrupting the reading experience
 
-All eye-tracking computation happens locally in the browser. Only paragraph text (never gaze data or video) is sent to the AI backend.
+Works on:
+- Web articles, documentation, any text-heavy page
+- Local PDFs (via bundled PDF.js viewer)
+- Local PowerPoint presentations (via bundled PPTX parser)
+
+**Zero transmission of video or raw gaze data** — all processing is local to your browser.
 
 ---
 
 ## How It Works
 
 ```
-Webcam → WebGazer.js (gaze estimation) → Feature Extractor → Script Patch → Classifier
-                                                                                  ↓
-                                                             Cognitive State (focused / skimming /
-                                                             confused / zoning_out / overloaded)
-                                                                                  ↓
-                                                             Action: AI Summary · TTS · Nudge · nothing
+Webcam Feed
+    ↓
+WebGazer.js (TensorFlow FaceMesh) — local gaze estimation (x, y) every ~33ms
+    ↓
+gaze-features.js — 2.5-second rolling window; extract 9 features
+    (fixation duration, regression rate, saccade metrics, drift, quality)
+    ↓
+lang-detect.js — script-aware patching for RTL/CJK languages
+    ↓
+classifier.js — decision tree: 9 features → cognitive state
+    ↓
+Five Cognitive States:
+  • focused      → reading normally (no action)
+  • skimming     → fast scanning (no action)
+  • struggling   → high regressions + long fixations → AI explanation
+  • overloaded   → dense text, short fixations → simplified summary
+  • zoning_out   → gaze drifting, off-screen → gentle nudge
+    ↓
+Non-intrusive popup: question or summary
+(only when confident; never interrupt on uncertain states)
 ```
 
-1. **WebGazer.js** processes the webcam feed locally (TensorFlow FaceMesh) and outputs an estimated gaze point (x, y) on the screen every ~33ms. No video is recorded or transmitted.
-2. **Feature extraction** computes 9 gaze features over a 2.5-second rolling window: average fixation duration, regression rate, saccade length and variance, gaze drift, velocity mean, line re-read count, and gaze quality.
-3. **Personal baseline normalization** scales each feature against the user's natural reading profile (captured during reading calibration) so that a naturally fast reader and a naturally slow reader are both measured relative to themselves.
-4. **Script-aware patching** adjusts features before classification based on detected page language: regression rate is inverted for RTL languages (where forward saccades go right-to-left), and fixation durations are scaled for CJK scripts (where characters require longer fixations by nature). See [Multilingual Support](#multilingual-support).
-5. **The classifier** is a decision tree (exported as plain JavaScript if/else — no ML runtime needed) that maps the 9 normalized features to one of five cognitive states.
-6. **State smoothing** takes the modal label across a 3-sample ring buffer to suppress single-frame noise.
-7. **Actions** are dispatched based on the state: confused and overloaded fetch an AI summary and optionally trigger TTS; zoning_out shows a visual nudge; skimming and focused take no action.
+**Key Research Features:**
+
+- **No video storage** — WebGazer processes frames locally and discards immediately
+- **9 gaze features** — fixation duration, regression rate, saccade length/variance, gaze drift, velocity, line re-reads, quality score
+- **Personal baseline normalization** — Each reader's features are calibrated against their own reading profile, not global norms
+- **Language-aware patching** — RTL and CJK scripts require feature adjustment before classification
+- **Synthetic-data classifier** — Trained on controlled data (known limitation; marked for real-world validation)
+- **State smoothing** — 3-sample modal ring buffer suppresses single-frame noise
 
 ---
 
-## Features
+## Research Capabilities
 
-### Core Reading Assistant
-| Feature | Description |
-|---|---|
-| **Gaze-triggered summaries** | When confused or overloaded state persists, the AI summarises the current paragraph |
-| **Text selection summaries** | Select any text with the mouse → instant AI summary popup |
-| **Image / figure explanation** | Eye tracker detects confused or overloaded state while gazing at an image (2-second dwell) → AI explains what the image shows and how it connects to the surrounding text. Also triggered by `Ctrl+hover` on any `<img>` element |
-| **Summary caching** | AI responses are cached for the session by `mode:fingerprint` key (max 100 entries, LRU). Re-visiting the same paragraph is instant with no extra API call |
-| **Comprehension monitoring** | Detects reading too fast through dense text (Flesch-Kincaid readability) and reading too slow relative to personal baseline |
-| **Scroll backtrack detection** | Detects when you scroll back to re-read, offering a summary |
-| **Previous paragraph context** | The paragraph before the selected one is sent to the AI so summaries are contextually aware |
-| **Save Notes** | Save any summary to a persistent notes store, viewable from the extension |
+### Gaze Feature Extraction
+| Feature | Description | Interpretation |
+|---|---|---|
+| **Fixation Duration** | Average time eyes hold on one point (ms) | Long fixations ↔ cognitive load |
+| **Regression Rate** | Proportion of eye movements going backward | High regression ↔ re-reading / confusion |
+| **Saccade Length** | Average distance of eye jumps | Short saccades ↔ close reading |
+| **Saccade Variance** | Std dev of saccade distances | Low variance ↔ consistent scanning |
+| **Gaze Drift** | Dispersion of samples in a fixation (pixels) | High drift ↔ noise / poor calibration |
+| **Velocity Mean** | Average eye speed (px/ms) | *Note: unreliable due to tracker noise* |
+| **Line Re-reads** | Detected backward movement within line | High count ↔ difficulty with line |
+| **Quality Score** | Confidence in tracker output (0–1) | <0.25 triggers gating (no classification) |
+| **On-Page Fraction** | % of samples within text area | Detects reader attention drift |
 
-### Accuracy & Personalisation
-| Feature | Description |
-|---|---|
-| **Dot calibration** | 9-point 3×3 grid, two passes — provides training examples for WebGazer's ridge regression |
-| **Reading calibration** | Words are highlighted at natural reading speed; calibration captures ~80 training examples from actual reading positions |
-| **Calibration persistence** | Calibration runs once. The offset is saved to extension storage and silently restored on every subsequent page |
-| **Personal baseline** | Gaze features recorded during reading calibration become a normalisation baseline, so the classifier adapts to the individual reader |
-| **Click training** | Every click on the page is recorded as a WebGazer training example, continuously improving gaze accuracy |
-| **Multi-sample offset** | At calibration completion, 5 predictions at viewport centre are taken, outliers trimmed, and averaged for a stable correction offset |
-| **Gaze quality gate** | When gaze quality < 25% (poor lighting, face obstructed), classification is skipped rather than guessing |
-| **Gaze quality toast** | After 24 seconds of poor quality, a user-facing notification appears: "Low camera quality — move to better lighting" |
-| **State smoothing** | 3-sample modal ring buffer prevents single bad frames from triggering actions |
+**Known Limitation:** Saccade metrics (length, variance, velocity) sit within WebGazer's ~180px error margin and largely measure tracker noise rather than eye movement. Documented for transparency; retraining recommended before production use.
 
-### Visual Aids
-| Feature | Description |
-|---|---|
-| **Dark Mode** | Toggle in the popup that themes both the extension UI and all in-page summary popups and overlays |
-| **Reading Map** | Collapsible right-side sidebar showing article progress, a clickable heading minimap, and an event log of confusion / summary moments. Toggle: `Alt+M` |
-| **Focus Ruler** | Dims everything above and below a ~104px horizontal band following gaze Y position. Acts as a digital reading ruler. Toggle: `Alt+F` or Assist tab |
-| **Paragraph highlight** | The paragraph that triggered an action is briefly outlined |
-| **Idle edge pulse** | Screen edges pulse when gaze leaves the reading area for extended periods |
+### Calibration & Personalization
+- **Dot calibration** — 9-point grid (2 passes) trains WebGazer's ridge regression model
+- **Reading calibration** — Natural-pace word highlighting captures ~80 real reading samples
+- **Personal baseline** — Each user's feature distributions become the norm; readers above/below their own baseline trigger states
+- **Continuous improvement** — Every mouse click is logged as a training sample for WebGazer
+- **Gaze quality gate** — Classification skipped when quality <25% (poor lighting, occlusion)
 
-### Reading Personas
-Four named presets that configure all toggles at once. Select in the popup's **Reading Mode** section; settings can be further adjusted per-session.
-
-| Persona | What it sets |
-|---|---|
-| **Research** | Eye tracking on · selection on · highlight on · comprehension on · focus ruler on · pin popups · idle blink on |
-| **Study** | Eye tracking on · TTS on · comprehension on · autohide after 10s · idle blink on |
-| **Casual** | Eye tracking off · selection only · autohide after 6s |
-| **Speed** | Eye tracking on · focus ruler on · autohide after 4s · idle blink on · no comprehension check |
-
-### Accessibility
-| Feature | Description |
-|---|---|
-| **Dyslexia Mode** | Applies Verdana/Arial font, 2× line height, wider letter/word spacing, left alignment |
-| **Colour overlay** | Optional tint (warm yellow, light blue, soft green, pale rose) rendered with `mix-blend-mode: multiply` |
-| **Bionic Reading** | Bolds the first ~45% of each word to create visual anchors for each word |
-| **Threshold softening** | When Dyslexia Mode is on, regression rate and fixation thresholds are patched before classification so natural dyslexic patterns do not over-trigger confused/overloaded |
-| **TTS (Read Aloud)** | Web Speech API reads the triggered paragraph aloud, word by word, with each word highlighted as it is spoken. Toggle: `Alt+T` or Assist tab |
-
-### Session Reports
-| Feature | Description |
-|---|---|
-| **Session tracking** | Every reading session (>30s) records: time in each cognitive state, comprehension signals, average WPM, confusion/backtrack counts |
-| **Session report page** | Shows: time on page, avg WPM, colour-coded state distribution bar, list of confusion moments with paragraph excerpts |
-| **Highlight persistence** | Paragraphs that received an AI summary get a subtle green left border on next visit to the same URL |
-| **Notes** | Summaries can be manually saved and reviewed from a dedicated notes page |
+### Intervention System
+- **Non-intrusive popups** — Suggestions appear below or beside text, not overlaying it
+- **Reading map** — Sidebar visualization of article progress and confusion events (`Alt+M`)
+- **Focus ruler** — Horizontal dim-band following gaze Y, aids line tracking (`Alt+F`)
+- **Session tracking** — Per-session state durations, event log, average WPM
+- **Paragraph highlighting** — Source paragraphs marked for review after session ends
 
 ### Document Support
-| Format | Mechanism |
+| Format | Method |
 |---|---|
-| **Web pages** | Content script injects directly; gaze maps to DOM paragraphs |
-| **Local PDFs** | `file://*.pdf` navigations are intercepted by the background service worker and redirected to a bundled PDF.js viewer. TL;DR content script injects normally |
-| **Local PPTX** | `file://*.pptx` navigations redirected to a bundled PPTX viewer (JSZip parses slide XML). Each slide renders as a readable text card |
+| Web articles | Direct DOM injection; gaze maps to `<p>`, `<div>`, etc. |
+| PDFs | `file://*.pdf` intercepted; bundled PDF.js viewer with gaze overlay |
+| PowerPoint (PPTX) | `file://*.pptx` intercepted; JSZip parses slides; gaze tracking over text |
 
 ---
 
-## Cognitive States
+## Cognitive States (Gaze-Based Classification)
 
-| State | What it means | Action |
-|---|---|---|
-| `focused` | Normal, on-task reading | None |
-| `skimming` | Fast scanning, high velocity, short fixations | None |
-| `confused` | High regression rate, long fixations, low saccade variance | Explain summary + optional TTS |
-| `zoning_out` | Gaze drifting, low fixation count, eyes off text | Gentle visual nudge |
-| `overloaded` | Unusually short fixations despite high text density | Simplified summary + optional TTS |
+The classifier maps 9 normalized gaze features to 5 states:
 
-State is classified every 3 seconds. Actions fire with a 20-second per-paragraph cooldown to avoid feeling intrusive.
+| State | Gaze Pattern | Typical Features | Interpretation |
+|---|---|---|---|
+| **focused** | Steady fixations, forward saccades | Low regression, normal fixation, high velocity | Normal reading pace |
+| **skimming** | Fast scanning, long saccades | High velocity, short fixations, low fixation time | Rapid document scanning |
+| **struggling** | High regressions, prolonged fixations | High regression rate, long fixation duration, low saccade variance | Re-reading due to difficulty or confusion |
+| **overloaded** | Shallow scanning despite density | Short fixations with high text complexity | Cognitive overload; reduced attention |
+| **drifting** | Off-screen, low fixation count | Low on-page fraction, gaze outside text area | Attention has left the page |
 
----
+Classification runs every 3 seconds; state smoothing (3-sample modal filter) suppresses single-frame noise.
 
-## Reader Profiles
-
-### Professionals (lawyers, doctors, analysts, office workers)
-Dense, long-form text is the daily norm. TL;DR helps with:
-- Comprehension check flags paragraphs read faster than their difficulty warrants (critical in contracts)
-- AI explains jargon in context, with the surrounding paragraph included for accuracy
-- Session reports show where reading slowed down — useful for identifying clauses to re-examine
-- Personal baseline adapts to their naturally fast professional reading pace, avoiding false "confused" triggers
-- TTS useful for hands-free review while annotating or taking notes
-
-### Students
-- Reading calibration sets a personal WPM baseline per document type
-- Confused state triggers explanations; overloaded state triggers simplifications
-- PPTX viewer gives TL;DR treatment to lecture slides
-- Session reports show exactly which sections they struggled with — useful for revision and identifying gaps
-- Highlight persistence marks previously difficult paragraphs on re-reads
-- Scroll backtrack detection recognises when they re-read a section and offers a summary
-- Dyslexia Mode + bionic reading available for students who need it
-
-### Dyslexic readers
-- **Turn on Dyslexia Mode** (Accessibility tab in popup): font, spacing, and colour overlay adjust immediately
-- Bionic reading bolds word anchors to reduce horizontal tracking difficulty
-- Classifier thresholds are patched so the natural dyslexic reading pattern (higher regression, longer fixations) does not over-trigger confused/overloaded — the extension understands this is normal
-- TTS as a parallel channel: the text is both visible and spoken
-- Focus Ruler eliminates the common "losing my place on the line" problem
-- Because Dyslexia Mode is self-declared (toggle), there are no false-positive detection issues
-
-### Non-native speakers / language learners
-- AI responses are generated **in the same language as the text being read** — explanations of a French article come in French, Arabic in Arabic, Japanese in Japanese
-- RTL language support: the gaze classifier is adapted automatically for Arabic, Hebrew, Persian, and other RTL scripts (see [Multilingual Support](#multilingual-support))
-- TTS helps with pronunciation and prosody
-- Backtrack detection recognises when a sentence needed a second read
-- Selection summary works on any highlighted phrase
-- Consider combining with Dyslexia Mode's wider spacing, which also helps when reading in a second language
-
-### Casual / general readers
-- Everything is automatic once the camera is on — no manual interaction required
-- Idle edge pulse is a gentle reminder to re-engage when zoning out
-- Session reports show how long sessions actually were vs how much was active reading
-- Autohide popups keep the experience clean
-
-### Researchers / academics
-- FK readability scoring is calibrated to academic difficulty levels
-- Very difficult paragraphs (FK score < 40) trigger a different expected WPM threshold
-- Personal baseline normalises to the researcher's own pace with dense literature
-- Previous paragraph context means AI summaries understand the argument structure
+**Intervention Policy:**
+- Max 1 intervention per 3 minutes per paragraph
+- Max 5 per session
+- Never interrupt on `unknown` (insufficient confidence)
 
 ---
 
-## Multilingual Support
+## Language Handling & Script-Aware Feature Patching
 
-### AI response language
-All server prompts instruct the model to respond in the same language as the passage being read. An Arabic paragraph produces an Arabic summary; a Japanese paragraph produces Japanese. This requires no user configuration.
+The classifier was trained on English LTR reading data. To generalize across scripts and languages, feature values are patched before classification based on detected script:
 
-### RTL languages (Arabic, Hebrew, Persian, Urdu, and others)
+### RTL Languages (Arabic, Hebrew, Persian, Urdu, Syriac, etc.)
 
-The gaze classifier was trained on left-to-right English reading data. In LTR reading, a leftward eye movement (dx < 0) is a regression — going back to re-read. In RTL reading, leftward is *forward*. Without adaptation, a focused Arabic reader would generate a very high raw regression rate (~0.7) and be falsely classified as confused or overloaded.
+**Problem:** In LTR, leftward eye movement = regression. In RTL, leftward = forward motion.
 
-`lang-detect.js` detects RTL pages and inverts the `regression_rate` feature before classification:
-
+**Solution:** `lang-detect.js` inverts `regression_rate` for RTL pages:
 ```
 patched_regression_rate = 1 − raw_regression_rate
 ```
 
-This inversion is symmetric: it correctly maps both states.
+Result: A focused RTL reader (mostly leftward saccades) no longer triggers false `struggling` classification.
 
-| Reader state | Raw regression rate | After inversion | Classifier output |
-|---|---|---|---|
-| Focused RTL reader (mostly leftward saccades) | ~0.70 | ~0.30 | focused ✓ |
-| Confused RTL reader (re-reading rightward) | ~0.30 | ~0.70 | confused ✓ |
+### CJK Languages (Chinese, Japanese, Korean)
 
-A confused RTL reader produces *fewer* forward (leftward) saccades because they are re-reading sections rightward — so their raw rate drops, the inversion pushes it high, and the classifier correctly fires. The distress signal is preserved, not erased.
+**Problem:** Dense glyphs require 30–40% longer fixations per character.
 
-### CJK languages (Chinese, Japanese, Korean)
-
-CJK character-based scripts require longer fixation durations per unit of text — typically 30–40% above alphabetic baselines, because each glyph is semantically dense. The trained classifier threshold for confusion is 450 ms average fixation. A focused Japanese reader processing complex kanji at 450–500 ms would cross that threshold and be falsely classified as confused.
-
-`lang-detect.js` scales fixation features by 0.78 on CJK pages:
-
+**Solution:** Fixation features scaled by 0.78 before classification:
 ```
-avg_fixation_ms  ← avg_fixation_ms × 0.78
-fixation_std     ← fixation_std     × 0.78
+avg_fixation_ms ← avg_fixation_ms × 0.78
+fixation_std    ← fixation_std     × 0.78
 ```
 
-A 500 ms normal-but-dense fixation becomes 390 ms — safely in the focused zone. A genuinely confused fixation at 650 ms becomes 507 ms — still above threshold, correctly triggering an explanation.
+Result: Normal-speed Japanese reading (500ms fixations) no longer falsely triggers `overloaded` state.
 
-The Flesch-Kincaid readability check (in `comprehension-monitor.js`) is already bypassed on non-English pages via an `isEnglishPage()` guard, so CJK readers are not penalised by an English-only formula.
+### Script Detection
 
-### Script detection (`lang-detect.js`)
+Three-layer detection (runs once per page load):
+1. `<html lang="...">` attribute
+2. `dir="rtl"` or computed CSS `direction`
+3. Unicode character sampling (>15% threshold in RTL or CJK blocks)
 
-Detection runs once on page load using three layers:
-
-1. `<html lang="...">` attribute — most reliable when set correctly
-2. `dir="rtl"` HTML attribute or CSS `direction: rtl` computed style — catches sites that set direction without a proper lang tag
-3. Unicode character sampling — reads the first 1000 visible characters of `body.innerText` and checks what fraction fall in RTL Unicode blocks (Arabic U+0600–06FF, Hebrew U+0590–05FF, etc.) or CJK blocks (Hiragana, Katakana, CJK Unified U+4E00–9FFF, Hangul). If >15% of non-whitespace characters match, the script is detected.
-
-The 15% threshold avoids false positives from pages that embed a few foreign words in otherwise Latin-script text.
-
-Summary popups use `dir="auto"` on their content area, so the browser's bidi algorithm automatically renders RTL AI responses in the correct direction without explicit tracking.
-
-**Known limitation:** detection runs once per page load. Single-page apps that navigate between language contexts without a full reload will not re-detect. A `MutationObserver` on the `<html>` element's `lang`/`dir` attributes would address this in a future update.
+**Known Limitation:** Single-page apps that navigate between languages without reload will not re-detect. This is documented for future research improvements.
 
 ---
 
-## Architecture
+## Architecture: Three-Layer System
+
+### Layer 1: Gaze Acquisition (webgazer-bootstrap.js)
+Injects WebGazer into the page's MAIN world (where `window.webgazer` is accessible). Runs TensorFlow FaceMesh to extract face landmarks and estimate gaze (x, y) on screen. Uses postMessage bridge to relay gaze samples back to the isolated content script.
+
+### Layer 2: Feature Extraction & Classification (gaze-features.js → classifier.js)
+Buffers gaze samples over 2.5-second rolling window. Computes 9 features: fixation duration, regression rate, saccade metrics, gaze drift, quality score. Applies language-aware patching (RTL inversion, CJK fixation scaling). Feeds normalized features to decision tree classifier → cognitive state.
+
+### Layer 3: Intervention & UI (ui-controller.js → popup)
+Non-intrusive popups display targeted suggestions. Session tracking records state durations, event log. Reading map sidebar visualizes progress and confusion moments.
+
+### Supporting Systems
+- **reading-calibration.js** — Dot calibration (9-point) and reading calibration (word-by-word) to build personal baselines
+- **session-tracker.js** — Per-session statistics (time per state, WPM, confusion count)
+- **comprehension-monitor.js** — Telemetry-based checks (reading too fast for difficulty, scroll backtrack)
+- **lang-detect.js** — Script detection and feature patching for multilingual support
+- **pdf-handler.js**, **pptx-handler.js** — Document parsing for PDF and PowerPoint
+
+### Cross-World Communication
+Chrome content scripts run in an isolated world; WebGazer runs in the page context (MAIN world):
 
 ```
-TL_DR/
-├── manifest.json              MV3 extension manifest
-├── background.js              Service worker: message routing, file:// intercept, tab management
-│
-├── src/
-│   ├── content/
-│   │   ├── content.js         Main content script: orchestrates all modules
-│   │   ├── classifier.js      Decision tree: 9 features → 5 cognitive states
-│   │   ├── gaze-utils.js      EMA smoothing, velocity rejection, calibration, baseline normalisation
-│   │   ├── gaze-features.js   Rolling window feature extractor (DBSCAN noise filter)
-│   │   ├── lang-detect.js     Script detection (RTL/CJK) and pre-classification feature patching
-│   │   ├── comprehension-monitor.js  WPM measurement, too-fast/too-slow detection, backtrack
-│   │   ├── reading-calibration.js    Word-by-word expert calibration overlay
-│   │   ├── session-tracker.js        Per-session state durations, signals, WPM, persistence
-│   │   ├── tts-handler.js     Web Speech API: sentence splitting, word-boundary highlighting
-│   │   ├── focus-ruler.js     Horizontal dim-band following gaze Y
-│   │   ├── dyslexia-utils.js  Font/spacing CSS, colour overlay, bionic reading, threshold patch
-│   │   ├── reading-map.js     Collapsible sidebar: progress bar, heading minimap, event log
-│   │   ├── idle-overlay.js    Edge pulse when gaze leaves screen
-│   │   ├── overlay-utils.js   DOM block ancestor finder, popup positioning helpers
-│   │   ├── pdf-handler.js     PDF text extraction helpers
-│   │   ├── pptx-handler.js    PPTX parsing via JSZip
-│   │   ├── sra-page-bridge.js Bridge between isolated content-script world and page context
-│   │   └── webgazer-bootstrap.js  Loads WebGazer in MAIN world, pipes gaze via postMessage
-│   │
-│   ├── popup/
-│   │   ├── popup.html         Three-tab popup: Assist · Accessibility · Session
-│   │   ├── popup.js           Popup logic: settings, broadcast, camera status, simulate, personas
-│   │   ├── session-report.html  Per-session reading report with state distribution chart
-│   │   └── notes.html         Saved notes viewer
-│   │
-│   ├── pdf-viewer/
-│   │   └── viewer.html        Extension-hosted PDF viewer (PDF.js); content script injects here
-│   │
-│   ├── pptx-viewer/
-│   │   └── viewer.html        Extension-hosted PPTX viewer (JSZip); content script injects here
-│   │
-│   ├── libs/
-│   │   ├── webgazer.min.js    Bundled WebGazer (TF FaceMesh + ridge regression)
-│   │   ├── jszip.min.js       Bundled JSZip (PPTX parsing)
-│   │   └── pdfjs/
-│   │       ├── pdf.min.js     Bundled PDF.js
-│   │       └── pdf.worker.min.js
-│   │
-│   └── styles/
-│       └── overlay.css        Popup, calibration, highlight, nudge styles
-│
-└── server/
-    ├── index.js               Express proxy to Groq API
-    └── .env                   GROQ_API_KEY (not committed)
-```
-
-### Cross-world communication
-
-Chrome extensions run content scripts in an isolated JavaScript world. `window.webgazer` is not accessible from there. TL;DR solves this with a postMessage bridge:
-
-```
-Content script (isolated world)
-    ↓ postMessage({ source: 'sra-cal-record', x, y })
+Content script (isolated)
+    ↓ postMessage({ gaze: {x, y} })
 webgazer-bootstrap.js (MAIN world)
-    ↓ webgazer.recordScreenPosition(x, y)
-    ↓ postMessage({ source: 'sra-webgazer', gaze: {x, y} })
+    ↓ recordScreenPosition(x, y) [trains WebGazer]
+    ↓ postMessage({ gaze: estimated{x, y} })
 Content script
-    ↓ onGaze(data) → feature extraction → script patch → classification
+    ↓ gaze-features.js → classifier.js → state
 ```
 
 ---
 
-## File Structure
-
-See the Architecture section above for the annotated tree. Key relationships:
-
-- `content.js` imports all other content modules via `import(chrome.runtime.getURL(...))` (dynamic ES module imports)
-- `background.js` handles `file://` interception and message routing (tab creation, note saving, WebGazer injection fallback)
-- The popup communicates with the content script via `chrome.tabs.sendMessage` and `chrome.storage`
-
----
-
-## Installation
+## Installation & Testing
 
 ### Prerequisites
-- Google Chrome (or Chromium-based browser)
-- Node.js 18+ (for the backend server)
-- A Groq API key (free tier available at console.groq.com)
+- Google Chrome (or Chromium) version 87+ (MV3 support)
+- Node.js 18+
 - A webcam
+- Groq API key (free tier: console.groq.com)
 
-### Load the extension
+### Quick Start (5 minutes)
 
-1. Clone or download this repository.
-2. Open `chrome://extensions`.
-3. Enable **Developer mode** (top right toggle).
-4. Click **Load unpacked** and select the `TL_DR/` folder (the one containing `manifest.json`).
+```bash
+# 1. Clone and install
+git clone https://github.com/yourusername/AI-GARA.git
+cd AI-GARA
+npm install
 
-### Allow file access (for PDF and PPTX support)
+# 2. Set up backend
+cd server
+npm install
+echo "GROQ_API_KEY=gsk_your_key_here" > .env
+node index.js &
+cd ..
 
-1. On `chrome://extensions`, click **Details** next to TL;DR.
-2. Enable **Allow access to file URLs**.
+# 3. Load in Chrome
+# → chrome://extensions/
+# → Developer mode (top right)
+# → Load unpacked → select this folder
+# → Click Details → "Allow access to file URLs" (for PDF/PPTX)
 
-This is required for the PDF and PPTX viewers to fetch local files.
+# 4. Test on a page
+# Open any article → click AI-GARA icon → Start Camera
+# Follow calibration prompts → read
+```
+
+### Calibration (Required)
+
+1. **Dot calibration** (~1 minute)
+   - Opens automatically on first use
+   - Click green dots as they appear (2 passes × 9 points = 18 clicks)
+   - Trains WebGazer's ridge regression offset
+
+2. **Reading calibration** (~1 minute, optional)
+   - Words highlight one at a time; read at natural pace
+   - Captures ~80 training samples from your actual reading position
+   - Builds personal WPM baseline (used for too-fast/too-slow detection)
+
+**Run both calibrations once; they persist across all pages.**
 
 ---
 
-## Running the Backend Server
+## Backend Server (`server/index.js`)
 
-The extension requires a local backend that proxies requests to the Groq API.
+Proxies paragraph text to Groq API for AI summaries. Runs on `http://localhost:3000` by default.
 
+**Environment setup:**
 ```bash
-cd TL_DR/server
+cd server
 npm install
-```
-
-Create a `.env` file in the `server/` directory:
-
-```
-GROQ_API_KEY=gsk_your_key_here
-```
-
-Start the server:
-
-```bash
+echo "GROQ_API_KEY=gsk_your_key_here" > .env
 node index.js
 ```
 
-The server listens on `http://localhost:3000` by default. It exposes one endpoint:
-
+**Endpoint:**
 ```
 POST /api/summarize
 Content-Type: application/json
 
 {
   "text": "paragraph text...",
-  "mode": "tldr" | "explain_more" | "simplify" | "explain_code" | "image_context",
-  "context": "previous paragraph text (optional)"
+  "mode": "tldr" | "simplify" | "explain",
+  "context": "previous paragraph (optional)"
 }
 ```
 
-**Security:** CORS is restricted to `localhost` and `chrome-extension://` origins only. A rate limiter of 30 requests per minute per IP is applied. The `GROQ_API_KEY` is never exposed to the extension.
+**Security:** CORS restricted to `localhost` + `chrome-extension://` origins. 30 req/min rate limit. API key never exposed to extension.
 
 ---
 
-## Usage Guide
+## Usage
 
-### First use
+### Typical Reading Session
 
-1. Navigate to any page with text.
-2. Open the extension popup (click the TL;DR icon).
-3. Go to the **Session** tab → click **Start Camera** → allow camera access.
-4. A dot-calibration overlay appears. Click each green dot as it appears (two passes, 18 clicks total).
-5. The calibration is saved. It will not appear again on future pages.
+1. Open any article/PDF/PPTX
+2. Click AI-GARA icon → **Start Camera** (allow permission)
+3. Follow calibration prompts (dot calibration, optional reading calibration)
+4. Read normally — system runs silently in background
+5. When `struggling` or `overloaded` is detected, popup appears with AI summary
+6. After session, view **Session Report** to see:
+   - Time in each cognitive state
+   - Paragraphs where difficulty was detected
+   - Average WPM
+   - Event log (confusion moments, regressions)
 
-### Optional: reading calibration (recommended)
+### Keyboard Shortcuts
 
-In the **Session** tab, click **Reading Calibration**. A paragraph is shown with words highlighted one at a time. Read at your natural pace — no clicking needed. This captures ~80 training points from your actual reading zone and builds your personal WPM baseline.
-
-**Run reading calibration once. Run dot calibration once. Both persist across all future pages.**
-
-### Reading personas
-
-In the popup's **Reading Mode** section, click a persona button (**Research**, **Study**, **Casual**, or **Speed**) to apply a preset configuration instantly. You can still adjust individual toggles after applying a persona.
-
-### Day-to-day
-
-Once camera is on, the extension runs silently. It will:
-- Show an AI popup when it detects confusion or overload
-- Explain images you gaze at while confused (2-second dwell triggers automatically)
-- Offer a summary when you read through a dense paragraph too quickly
-- Offer a summary when you scroll back up to re-read
-
-You can also:
-- **Select any text** → instant summary appears
-- **`Ctrl+hover` over any image** → instant image explanation
-- **Press `Alt+S`** → summarise the paragraph at gaze/viewport centre
-- **Press `Alt+T`** → toggle read-aloud
-- **Press `Alt+F`** → toggle focus ruler
-- **Press `Alt+M`** → toggle reading map sidebar
-- **Press `Esc`** → close any open popup
-
-### Viewing your session report
-
-After reading, open the popup → **Session** tab → **Session Report**. Sessions shorter than 30 seconds are not saved.
-
----
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
+| Key | Action |
 |---|---|
-| `Alt+S` | Summarise paragraph at current gaze / viewport centre |
-| `Alt+T` | Toggle Read Aloud (TTS) on/off |
-| `Alt+F` | Toggle Focus Ruler on/off |
-| `Alt+M` | Toggle Reading Map sidebar |
-| `Alt+N` | Open Saved Notes page |
-| `Alt+G` | Open Session Report page |
-| `Esc` | Close the active summary popup |
-| `Alt+1` | Simulate: Confused state (for testing) |
-| `Alt+2` | Simulate: Overloaded state |
-| `Alt+3` | Simulate: Zoning Out state |
-| `Alt+4` | Simulate: Skimming state |
+| `Alt+S` | Summarise paragraph at current gaze |
+| `Alt+T` | Toggle text-to-speech (read aloud) |
+| `Alt+F` | Toggle focus ruler (dim-band) |
+| `Alt+M` | Toggle reading map sidebar |
+| `Alt+1` to `Alt+5` | Simulate cognitive states (for testing) |
+| `Esc` | Close popup |
 
-All shortcuts are listed in the **Session** tab of the popup for discoverability.
+### Testing & Debugging
+
+**Simulate cognitive states** (useful for testing interventions):
+- `Alt+1` → Simulate `struggling` (high regression)
+- `Alt+2` → Simulate `overloaded` (short fixations)
+- `Alt+3` → Simulate `drifting` (off-page)
+- `Alt+4` → Simulate `skimming` (fast saccades)
+
+**Toggle debug mode** in popup Settings to see real-time gaze coordinates and feature values.
 
 ---
 
-## Configuration
+## Configuration & Storage
 
-All settings are stored in `chrome.storage.local` and survive browser restarts.
+Settings are stored in `chrome.storage.local` (persistent across restarts):
 
-| Storage key | Default | Description |
+| Key | Default | Purpose |
 |---|---|---|
-| `sra_enabled` | `true` | Master on/off |
-| `sra_eye` | `true` | Eye tracking on/off |
-| `sra_selection` | `true` | Text-selection summaries |
-| `sra_highlight_para` | `true` | Highlight source paragraph |
-| `sra_autohide` | `false` | Auto-dismiss popups |
-| `sra_autohide_timeout` | `12` | Auto-dismiss delay (seconds) |
-| `sra_pin_default` | `false` | Pin popups open by default |
-| `sra_debug` | `false` | Show gaze prediction dots |
-| `sra_idle_blink` | `true` | Edge pulse when zoning out |
-| `sra_comprehension` | `true` | Comprehension speed checks |
-| `sra_tts` | `false` | Read Aloud on confusion |
-| `sra_focus_ruler` | `false` | Focus ruler (dim band) |
-| `sra_dyslexia` | `false` | Dyslexia mode |
-| `sra_dyslexia_color` | `rgba(255,243,180,0.12)` | Colour overlay tint |
-| `sra_bionic` | `false` | Bionic reading |
-| `sra_dark_mode` | `false` | Dark mode for extension UI and in-page popups |
-| `sra_active_persona` | `''` | Last applied reading persona (`research` / `study` / `casual` / `speed`) |
+| `sra_eye` | `false` | Enable/disable eye tracking |
+| `sra_calibration` | `{dx:0, dy:0}` | Gaze offset (set during dot calibration) |
+| `sra_personal_baseline` | `null` | Per-reader feature thresholds (from reading calibration) |
+| `sra_baseline_wpm` | `null` | Personal words-per-minute baseline |
 | `sra_backend_url` | `http://localhost:3000/api/summarize` | AI backend endpoint |
-| `sra_ever_calibrated` | `false` | Whether dot calibration has run |
-| `sra_calibration` | `{dx:0, dy:0}` | Gaze correction offset |
-| `sra_personal_baseline` | `null` | Personal gaze feature baseline |
-| `sra_baseline_wpm` | `null` | Personal WPM baseline |
-| `sra_current_state` | `''` | Last classified cognitive state |
-| `sra_camera_ready` | `false` | Camera initialisation status |
-| `sra_notes` | `[]` | Saved notes array |
-| `sra_sessions` | `[]` | Session report data (last 20) |
-| `sra_highlights` | `{}` | Paragraph highlights by URL key |
+| `sra_sessions` | `[]` | Session data (last 20) |
+| `sra_debug` | `false` | Show real-time gaze coordinates |
+| `sra_tts` | `false` | Enable text-to-speech on interventions |
+
+**Research note:** All data stays local. No telemetry is sent unless you explicitly send session data to an external service.
 
 ---
 
-## Accessibility
+## Accessibility Features
 
-### Dyslexia Mode
-Activated via the **Accessibility** tab in the popup (self-declaration). Applies:
-- Font: Verdana/Arial (high legibility, wider letterforms)
-- Line height: 2.0 (reduces line crowding)
-- Letter spacing: +0.06em
-- Word spacing: +0.14em
-- Text alignment: left (ragged right reduces river patterns)
-- Optional colour overlay (warm yellow default) with `mix-blend-mode: multiply`
+- **Focus Ruler** (`Alt+F`) — Horizontal dim-band follows gaze Y; aids line tracking and place-keeping
+- **Text-to-Speech** (`Alt+T`) — Web Speech API; reads triggered paragraphs word-by-word with highlighting
+- **Dyslexia Mode** — Font, spacing, line-height adjustments; optional colour overlay
+- **Dark Mode** — Theme extension UI and in-page overlays
+- **Bionic Reading** — Bolds first ~45% of each word for visual anchors
 
-### Bionic Reading
-When enabled (sub-option under Dyslexia Mode), the first 45% of each word is bolded to provide a visual anchor. Applied to paragraphs when an AI action fires.
-
-### Focus Ruler
-A soft horizontal dim-band follows gaze Y position in real time. Keeps the eye anchored to the current reading line. Especially effective for:
-- Readers who lose their place mid-line
-- Dense multi-column layouts
-- Long lines without natural breaks
-
-**The focus ruler is optional.** Toggle with `Alt+F` or the **Focus Ruler** toggle in the Assist tab. It is off by default.
-
-### TTS (Text-to-Speech)
-Uses the Web Speech API (browser-native, no external dependencies, works offline). When the confused state is detected and TTS is on, the paragraph is spoken sentence-by-sentence with each word highlighted as it is spoken.
-
-Toggle with `Alt+T` or the **Read Aloud** toggle in the Assist tab.
-
-### Dark Mode
-Toggle in the popup header. Themes the popup UI and all in-page overlays (summary popups, reading map, calibration panel, page summary panel). Preference is saved across sessions.
+All features are optional and can be toggled independently.
 
 ---
 
-## Privacy
+## Privacy & Data Handling
 
-- **No video is recorded, stored, or transmitted.** WebGazer processes webcam frames locally using TensorFlow.js and discards them immediately after extracting facial landmarks.
-- **Only paragraph text is sent to the AI backend.** Gaze coordinates, feature values, cognitive state labels, and all session data remain local.
-- **The AI backend runs locally** (`localhost:3000`). Paragraph text leaves your machine only to reach `localhost` (which then calls Groq). If you run your own Groq-compatible endpoint, no text leaves your machine at all.
-- **Session reports, highlights, and notes** are stored in `chrome.storage.local` — local to your browser profile, never synced to a server.
+- **No video stored or transmitted** — WebGazer.js processes webcam locally via TensorFlow.js; frames discarded immediately after landmark extraction
+- **Gaze data stays local** — Raw coordinates, computed features, cognitive state labels never leave your browser
+- **Only text is sent to AI** — Paragraph snippets go to your local backend (`localhost:3000`), which proxies to Groq
+- **Session data is local** — Stored in `chrome.storage.local`; never synced to cloud
+- **Full transparency** — Enable `sra_debug` to see real-time feature values and gaze dots
 
 ---
 
 ## Security
 
-| Control | Implementation |
-|---|---|
-| CORS restriction | Backend only accepts requests from `chrome-extension://` and `localhost` origins |
-| Rate limiting | 30 requests per minute per IP on `/api/summarize` |
-| Secret isolation | `GROQ_API_KEY` lives in `server/.env` only, never in extension files |
-| `.gitignore` | `.env` is excluded from version control |
-| No remote code | All libraries (WebGazer, PDF.js, JSZip) are bundled locally; no CDN calls from the extension |
-| Input sanitisation | All text rendered in popups is HTML-escaped before insertion |
+- **API keys isolated** — `GROQ_API_KEY` in `server/.env` only; never exposed to extension
+- **CORS restricted** — Backend accepts only `chrome-extension://` and `localhost`
+- **Rate limited** — 30 requests/min on `/api/summarize`
+- **Bundled libraries** — WebGazer, PDF.js, JSZip included; no CDN calls
+- **Input sanitized** — All text HTML-escaped before rendering
 
 ---
 
-## Development Notes
+## Development & Research Notes
 
-### Adding a new cognitive state
+### Known Limitations (Transparent for Researchers)
 
-1. Add the label to the classifier tree in `src/content/classifier.js`.
-2. Add a corresponding entry in `COGNITIVE_STATE_ACTIONS` in the same file.
-3. Add a chip and colour in `popup.html` and `overlay.css`.
+1. **Classifier trained on synthetic data** — 5000 rows (500/class + Gaussian noise), 0.851 synthetic accuracy. Real-world validation needed before production claims.
 
-### Changing the AI model
+2. **Saccade metrics unreliable** — `saccade_length`, `saccade_std`, `velocity_mean` sit inside WebGazer's ~180px error; they measure tracker noise more than eye movement. Best gaze features: `gaze_drift`, `on_page_fraction`, `fixation_duration`, `regression_rate`.
 
-Edit `server/index.js` — update the `model` field in the Groq API call. The extension is model-agnostic.
+3. **Feature extraction improvements** — `gaze-features.js` line 84 uses raw viewport Y (no scroll offset), so scrolling changes line band with zero eye movement. DBSCAN eps=80 is below tracker noise. Documented for future work.
 
-### Retraining the classifier
+4. **RTL/CJK patching is workaround** — Feature inversion/scaling compensates for LTR-trained classifier on non-LTR scripts. True multilingual training would be superior.
 
-The current classifier is a static decision tree generated from synthetic training data. To retrain:
-1. Collect labelled `(features, state)` pairs from real sessions (session-tracker.js can be extended to export raw feature vectors)
-2. Train a decision tree (scikit-learn works well)
-3. Export as JavaScript if/else and replace `src/content/classifier.js`
+### Extending the System
 
-Note: if retraining with multilingual data, include RTL and CJK reading samples and remove the script-aware patching in `lang-detect.js` — the patching is only needed because the current classifier was trained on LTR alphabetic data.
+**Collect Real Reading Data:**
+1. Enable feature export in `session-tracker.js` (return raw 9-feature vectors)
+2. Label sessions by cognitive state (use state smoothing output)
+3. Retrain decision tree (scikit-learn, XGBoost, etc.)
+4. Export as JavaScript if/else; replace `src/content/classifier.js`
 
-### Adding a new reading persona
+**Add New Cognitive State:**
+1. Add leaf to decision tree in `classifier.js`
+2. Add color mapping in `popup.html` + `overlay.css`
+3. Define action in UI handler
 
-In `popup.js`, add a key to the `PERSONAS` constant with the desired toggle values, then add a corresponding `<button class="persona-btn" data-persona="...">` in `popup.html`.
+**Change AI Model:**
+Edit `server/index.js` — change `model` param in Groq call. System is model-agnostic.
 
-### Extension permissions explained
+### Permissions
 
 | Permission | Reason |
 |---|---|
-| `storage` | Save settings, calibration, notes, sessions |
-| `scripting` | Inject WebGazer into page context (MAIN world) |
-| `activeTab` | Communicate with the current tab |
-| `tabs` | Read tab URL for file:// interception; create new tabs |
-| `webNavigation` | Monitor navigation for file:// redirect |
-| `file:///*` | Fetch local PDF/PPTX files in the viewer pages |
+| `storage` | Calibration, settings, sessions |
+| `scripting` | Inject WebGazer (MAIN world) |
+| `activeTab` | Send messages to current tab |
+| `tabs` | URL inspection, tab creation |
+| `webNavigation` | Monitor `file://` navigation |
+| `file:///*` | Fetch local PDFs/PPTXs |
 
 ---
 
-## Upcoming
+## Known Issues & Future Work
 
-- **Domain-specific calibration** — separate WPM baselines per content type (news, academic, technical)
-- **Multilingual classifier retraining** — collect RTL and CJK reading data to train a natively multilingual decision tree, removing the need for the current feature-patching workaround
-- **SPA language re-detection** — `MutationObserver` on `<html lang>` / `dir` to re-run script detection when single-page apps navigate between language contexts without a full page reload
-- **Collaborative / classroom mode** — lecturer creates a room; students' confusion events are aggregated in real time; lecturer sees a heatmap of which sections the class struggled with (architecture in progress)
-- **Session export** — export session reports as JSON or formatted text for teacher review
-- **PPTX image slides** — current viewer renders text-only slides; image-heavy slides show as empty
+- **Single-page app language switching** — Detection runs once on load; SPA navigation to different language contexts won't re-detect. Add `MutationObserver` on `<html lang>` / `dir`.
+- **PPTX image slides** — Current viewer renders text only. Image-heavy slides show empty.
+- **Real-world classifier validation** — Synthetic accuracy is not real-world validation. Collect reading data from diverse subjects.
+- **Multilingual retrain** — Collect RTL/CJK reading samples to eliminate feature patching workaround.
 
 ---
 
-*Built by CJ_ · Powered by WebGazer.js, PDF.js, JSZip, Groq (llama-3.1-8b-instant / llama-3.3-70b-versatile)*
+## Citation
+
+If using this system for academic research:
+
+```
+AI-GARA: Eye Tracking for Cognitive Difficulty Detection
+Research extension implementing gaze-first classification pipeline
+WebGazer (Papoutsaki et al., 2016) + decision tree classifier
+AGPL-3.0 License
+```
+
+Acknowledge synthetic-data limitation and ~180px gaze error margin in your results.
+
+---
+
+**Status:** Research variant, pre-release (v0.2.0)
+**License:** AGPL-3.0 (due to WebGazer.js GPLv3 dependency)
+**Note:** This extension is maintained for educational and research purposes. For production reading-assistance systems, see related work.
