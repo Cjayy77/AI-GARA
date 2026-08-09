@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+session.json
+*.woff2
