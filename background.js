@@ -8,7 +8,7 @@
 // Requires "Allow access to file URLs" to be enabled in chrome://extensions.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => { 
   if (changeInfo.status !== 'loading') return; 
-  const url = tab.url || '';
+  const url = tab.url || ''; 
   if (!url) return;
 
   if (/^file:\/\/.+\.pdf(\?.*)?$/i.test(url)) {
