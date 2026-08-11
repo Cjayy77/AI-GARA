@@ -452,4 +452,4 @@ Acknowledge synthetic-data limitation and ~180px gaze error margin in your resul
 
 **Status:** Research variant, pre-release (v0.2.0)
 **License:** AGPL-3.0 (due to WebGazer.js GPLv3 dependency)
-**Note:** This extension is maintained for educational and research purposes. For production reading-assistance systems, see related work.
+**Note:** This extension is maintained for educational and research purposes. For production reading-assistance systems, see related work. Alcoia used in contrast and files, send for review. old context. edit readme. explore older version of the codebase deeply
