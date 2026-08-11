@@ -7,7 +7,7 @@
 // extension's custom PDF viewer page, which has full TL;DR integration.
 // Requires "Allow access to file URLs" to be enabled in chrome://extensions.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'loading') return;
+  if (changeInfo.status !== 'loading') return; 
   const url = tab.url || '';
   if (!url) return;
 
