@@ -1,5 +1,5 @@
 # AI-GARA — Eye Tracking for Cognitive Difficulty Detection
-  
+   
 A research-grade Chrome MV3 extension that uses gaze-tracking to detect reading difficulty in real time. Built for academic research, this system analyzes eye movement patterns to classify cognitive states during reading and delivers targeted interventions.
 
 **Research Focus:** Can gaze tracking reliably predict cognitive difficulty? This extension implements the full gaze-first pipeline to investigate that question.
