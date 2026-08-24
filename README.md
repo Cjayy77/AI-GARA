@@ -10,7 +10,7 @@ A research-grade Chrome MV3 extension that uses gaze-tracking to detect reading 
 
 ```bash
 # Clone and setup
-git clone https://github.com/yourusername/AI-GARA.git
+git clone https://github.com/Cjayy77/AI-GARA.git
 cd AI-GARA
 
 # Install dependencies
